@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import io from 'socket.io-client'
 import './App.css'
 
@@ -26,10 +26,11 @@ export default function App() {
   const [camReady, setCamReady] = useState(false)
   const [startWithVideo, setStartWithVideo] = useState(true)
   const [testMode, setTestMode] = useState(false)
-  const [camEnlarged, setCamEnlarged] = useState(false) // self-cam fullscreen swap
+  const [camEnlarged, setCamEnlarged] = useState(false)
+  const [unreadChat, setUnreadChat] = useState(0)
+  const [connectionState, setConnectionState] = useState('')
 
-  // Floating PiP position
-  const [pipPos, setPipPos] = useState({ x: 20, y: 20 })
+  const [pipPos, setPipPos] = useState({ x: 20, y: 80 })
   const [dragging, setDragging] = useState(false)
   const dragOffset = useRef({ x: 0, y: 0 })
 
@@ -41,14 +42,12 @@ export default function App() {
   const botAnimRef = useRef(null)
   const pipRef = useRef(null)
 
-  // --- Attach local stream ---
   useEffect(() => {
     if (camReady && localStream && localVideoRef.current) {
       localVideoRef.current.srcObject = localStream
     }
   }, [camReady, status, camEnlarged])
 
-  // --- Drag handlers ---
   function onPipMouseDown(e) {
     if (camEnlarged) return
     const touch = e.touches ? e.touches[0] : e
@@ -64,12 +63,9 @@ export default function App() {
       const touch = e.touches ? e.touches[0] : e
       const x = touch.clientX - dragOffset.current.x
       const y = touch.clientY - dragOffset.current.y
-      // Clamp to viewport
-      const pipW = 220
-      const pipH = 165
       setPipPos({
-        x: Math.max(0, Math.min(window.innerWidth - pipW, x)),
-        y: Math.max(50, Math.min(window.innerHeight - pipH - 70, y)),
+        x: Math.max(0, Math.min(window.innerWidth - 220, x)),
+        y: Math.max(60, Math.min(window.innerHeight - 165 - 60, y)),
       })
     }
     function onUp() { setDragging(false) }
@@ -85,7 +81,6 @@ export default function App() {
     }
   }, [dragging])
 
-  // --- Socket ---
   useEffect(() => {
     socket.connect()
     socket.on('connect', () => setConnected(true))
@@ -94,6 +89,7 @@ export default function App() {
     socket.on('matched', ({ initiator }) => {
       setStatus('connected')
       setMessages([])
+      setUnreadChat(0)
       startWebRTC(initiator)
     })
     socket.on('offer', async (data) => {
@@ -113,9 +109,13 @@ export default function App() {
     })
     socket.on('partner_left', () => { cleanupPeer(); setStatus('searching'); socket.emit('find_partner') })
     socket.on('find_again', () => { cleanupPeer(); setStatus('searching'); socket.emit('find_partner') })
-    socket.on('chat_message', (data) => { setMessages(p => [...p, data]); scrollChat() })
+    socket.on('chat_message', (data) => {
+      setMessages(p => [...p, data])
+      if (!showChat) setUnreadChat(n => n + 1)
+      scrollChat()
+    })
     return () => { socket.disconnect(); cleanupPeer() }
-  }, [])
+  }, [showChat])
 
   function scrollChat() {
     setTimeout(() => { if (chatBoxRef.current) chatBoxRef.current.scrollTop = chatBoxRef.current.scrollHeight }, 50)
@@ -124,8 +124,8 @@ export default function App() {
   async function startCamera(withVideo = true) {
     try {
       localStream = await navigator.mediaDevices.getUserMedia({
-        video: withVideo ? { width: 1280, height: 720 } : false,
-        audio: { echoCancellation: true, noiseSuppression: true },
+        video: withVideo ? { width: 1280, height: 720, facingMode: 'user' } : false,
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       })
       setCamReady(true)
       setVideoOff(!withVideo)
@@ -138,9 +138,9 @@ export default function App() {
           setCamReady(true); setVideoOff(true)
           if (localVideoRef.current) localVideoRef.current.srcObject = localStream
           return true
-        } catch (e2) { alert('Mic access required.'); return false }
+        } catch (e2) { return false }
       }
-      alert('Mic access required.'); return false
+      return false
     }
   }
 
@@ -150,10 +150,18 @@ export default function App() {
     if (localVideoRef.current && localStream) localVideoRef.current.srcObject = localStream
     peerConnection = new RTCPeerConnection(ICE_SERVERS)
     localStream.getTracks().forEach(t => peerConnection.addTrack(t, localStream))
-    peerConnection.ontrack = (e) => { if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0] }
+    peerConnection.ontrack = (e) => {
+      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = e.streams[0]
+      setConnectionState('connected')
+    }
     peerConnection.onicecandidate = (e) => { if (e.candidate) socket.emit('ice_candidate', e.candidate) }
+    peerConnection.oniceconnectionstatechange = () => {
+      setConnectionState(peerConnection?.iceConnectionState || '')
+    }
     peerConnection.onconnectionstatechange = () => {
-      if (peerConnection?.connectionState === 'disconnected' || peerConnection?.connectionState === 'failed') {
+      const s = peerConnection?.connectionState
+      setConnectionState(s)
+      if (s === 'disconnected' || s === 'failed') {
         cleanupPeer(); setStatus('searching'); socket.emit('find_partner')
       }
     }
@@ -167,6 +175,7 @@ export default function App() {
   function cleanupPeer() {
     if (peerConnection) { peerConnection.close(); peerConnection = null }
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null
+    setConnectionState('')
   }
 
   async function handleStart() {
@@ -190,6 +199,7 @@ export default function App() {
     if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null }
     if (localVideoRef.current) localVideoRef.current.srcObject = null
     setCamReady(false); socket.emit('next'); setStatus('idle')
+    setTestMode(false); setCamEnlarged(false)
   }
 
   function toggleMute() {
@@ -198,6 +208,11 @@ export default function App() {
 
   function toggleVideo() {
     if (localStream) { localStream.getVideoTracks().forEach(t => t.enabled = !t.enabled); setVideoOff(!videoOff) }
+  }
+
+  function toggleChat() {
+    setShowChat(!showChat)
+    if (!showChat) setUnreadChat(0)
   }
 
   function sendChat() {
@@ -216,7 +231,6 @@ export default function App() {
     setChatInput(''); scrollChat()
   }
 
-  // --- Bot avatar ---
   function startBotAvatar() {
     const canvas = botCanvasRef.current; if (!canvas) return
     const ctx = canvas.getContext('2d')
@@ -252,7 +266,7 @@ export default function App() {
   async function handleTestRoom() {
     const ok = await startCamera(startWithVideo)
     if (ok) {
-      setTestMode(true); setStatus('connected'); setMessages([])
+      setTestMode(true); setStatus('connected'); setMessages([]); setUnreadChat(0)
       setTimeout(() => { startBotAvatar(); if (localVideoRef.current && localStream) localVideoRef.current.srcObject = localStream }, 100)
     }
   }
@@ -266,27 +280,11 @@ export default function App() {
     stopBotAvatar(); cleanupPeer()
     if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null }
     if (localVideoRef.current) localVideoRef.current.srcObject = null
-    setCamReady(false); setTestMode(false); setStatus('idle')
+    setCamReady(false); setTestMode(false); setStatus('idle'); setCamEnlarged(false)
   }
 
-  // The "large" video is the one in the main area, "floating" is the PiP
-  // camEnlarged=false: remote=large, self=floating PiP
-  // camEnlarged=true:  self=large, remote=floating PiP
-  const largeVideo = (
-    <video
-      ref={camEnlarged ? localVideoRef : remoteVideoRef}
-      autoPlay playsInline muted={camEnlarged}
-      className="video"
-    />
-  )
-
-  const floatVideo = (
-    <video
-      ref={camEnlarged ? remoteVideoRef : localVideoRef}
-      autoPlay playsInline muted={!camEnlarged}
-      className="video"
-    />
-  )
+  const largeVideoRef = camEnlarged ? localVideoRef : remoteVideoRef
+  const floatVideoRef = camEnlarged ? remoteVideoRef : localVideoRef
 
   if (!connected) {
     return (
@@ -322,11 +320,9 @@ export default function App() {
         </div>
       ) : (
         <>
-          {/* Main video area — fills space between header and controls */}
           <div className="main-video-area">
-            {/* Large video */}
             <div className="large-video-container">
-              {largeVideo}
+              <video ref={largeVideoRef} autoPlay playsInline muted={camEnlarged} className="video" />
               {status === 'searching' && !camEnlarged && (
                 <div className="searching-overlay">
                   <div className="search-loader" />
@@ -334,33 +330,43 @@ export default function App() {
                 </div>
               )}
               {status === 'connected' && (
-                <div className="connected-badge">{camEnlarged ? '👀 You (enlarged)' : testMode ? '🤖 Test Bot' : '🟢 Connected'}</div>
+                <div className={`connected-badge ${testMode ? 'bot' : ''}`}>
+                  {camEnlarged ? '👀 You (enlarged)' : testMode ? '🤖 Test Bot' : '🟢 Connected'}
+                  {connectionState === 'connected' && !camEnlarged && !testMode && <span className="signal-bars"><span></span><span></span><span></span></span>}
+                </div>
+              )}
+              {videoOff && !camEnlarged && (
+                <div className="no-video-placeholder">
+                  <div className="no-video-icon">📹</div>
+                  <p>Camera is off</p>
+                </div>
               )}
             </div>
 
-            {/* Chat panel */}
             {showChat && (
               <div className="chat-panel">
-                <div className="chat-header">Chat</div>
+                <div className="chat-header">
+                  <span>💬 Chat</span>
+                  <button className="chat-close" onClick={() => setShowChat(false)}>✕</button>
+                </div>
                 <div className="chat-messages" ref={chatBoxRef}>
-                  {messages.length === 0 && <div className="no-msg">No messages yet</div>}
+                  {messages.length === 0 && <div className="no-msg">No messages yet. Say hi! 👋</div>}
                   {messages.map((m, i) => (
                     <div key={i} className={`chat-msg ${m.sender}`}>
-                      {m.sender === 'them' && <div className="msg-name">Stranger</div>}
+                      {m.sender === 'them' && <div className="msg-name">{testMode ? 'Bot' : 'Stranger'}</div>}
                       <div className="msg-bubble">{m.text}</div>
                       <div className="msg-time">{m.time}</div>
                     </div>
                   ))}
                 </div>
                 <div className="chat-input-row">
-                  <input className="chat-input" placeholder="Type…" value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendChat()} />
+                  <input className="chat-input" placeholder="Type a message…" value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendChat()} />
                   <button className="btn-send" onClick={sendChat}>➤</button>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Floating PiP — draggable, with enlarge button */}
           <div
             ref={pipRef}
             className={`floating-pip ${dragging ? 'dragging' : ''}`}
@@ -368,36 +374,41 @@ export default function App() {
             onMouseDown={onPipMouseDown}
             onTouchStart={onPipMouseDown}
           >
-            {floatVideo}
-            {camEnlarged && remoteVideoRef.current?.srcObject === null && (
-              <div className="cam-off-placeholder">No video</div>
+            <video ref={floatVideoRef} autoPlay playsInline muted={!camEnlarged} className="video" />
+            {camEnlarged && !remoteVideoRef.current?.srcObject && (
+              <div className="pip-no-video">No video</div>
             )}
             {!camEnlarged && videoOff && (
-              <div className="cam-off-placeholder">📷 Camera Off</div>
+              <div className="pip-no-video">📷 Off</div>
             )}
             <div className="pip-label">{camEnlarged ? 'Stranger' : 'You'}</div>
-            <button
-              className="pip-enlarge-btn"
-              onClick={(e) => { e.stopPropagation(); setCamEnlarged(!camEnlarged) }}
-              title={camEnlarged ? 'Shrink back' : 'Enlarge self-cam'}
-            >
-              {camEnlarged ? '🔀' : '🔍'}
+            <button className="pip-enlarge-btn" onClick={(e) => { e.stopPropagation(); setCamEnlarged(!camEnlarged) }} title={camEnlarged ? 'Shrink' : 'Enlarge'}>
+              {camEnlarged ? '🔀' : '⤢'}
             </button>
           </div>
 
-          {/* Hidden canvas for bot */}
           <canvas ref={botCanvasRef} style={{ display: 'none' }} />
         </>
       )}
 
-      {/* Controls — fixed at bottom, always visible */}
       {status !== 'idle' && (
         <div className="controls">
-          <button className={`ctrl-btn ${muted ? 'active' : ''}`} onClick={toggleMute} title="Mute">{muted ? '🔇' : '🎙️'}</button>
-          <button className={`ctrl-btn ${videoOff ? 'active' : ''}`} onClick={toggleVideo} title="Camera">{videoOff ? '🚫' : '📹'}</button>
-          <button className={`ctrl-btn ${showChat ? 'active' : ''}`} onClick={() => setShowChat(!showChat)} title="Chat">💬</button>
-          <button className="ctrl-btn next" onClick={testMode ? handleTestNext : handleNext} title="Next">⏭️<span className="btn-text">Next</span></button>
-          <button className="ctrl-btn stop" onClick={testMode ? handleTestStop : handleStop} title="Stop">⏹️<span className="btn-text">Stop</span></button>
+          <button className={`ctrl-btn ${muted ? 'active' : ''}`} onClick={toggleMute} title="Mute mic">
+            {muted ? '🔇' : '🎙️'}
+          </button>
+          <button className={`ctrl-btn ${videoOff ? 'active' : ''}`} onClick={toggleVideo} title="Camera">
+            {videoOff ? '📵' : '📹'}
+          </button>
+          <button className={`ctrl-btn ${showChat ? 'active' : ''}`} onClick={toggleChat} title="Chat">
+            💬
+            {unreadChat > 0 && <span className="badge">{unreadChat}</span>}
+          </button>
+          <button className="ctrl-btn next" onClick={testMode ? handleTestNext : handleNext} title="Next stranger">
+            ⏭️<span className="btn-text">Next</span>
+          </button>
+          <button className="ctrl-btn stop" onClick={testMode ? handleTestStop : handleStop} title="Stop">
+            ⏹️<span className="btn-text">Stop</span>
+          </button>
         </div>
       )}
     </div>
