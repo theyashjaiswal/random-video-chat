@@ -1,6 +1,8 @@
 # ⚡ StrangerChat
 
-> Random video chat app built with React, WebRTC, and Socket.IO. Connect with random strangers instantly — no sign-up needed.
+> Random video chat app built with React, WebRTC, and Socket.IO. Connect with strangers instantly — no sign-up needed.
+>
+> *Inspired by many similar platforms in the random video chat space.*
 
 <div align="center">
 
