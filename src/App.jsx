@@ -298,15 +298,19 @@ export default function App() {
   return (
     <div className="app">
       <div className="header">
-        <div className="logo">🎥 Random Video Chat</div>
+        <div className="logo">
+          <span className="logo-icon">⚡</span>
+          <span className="logo-text">StrangerChat</span>
+        </div>
         <div className="online-badge"><span className="dot" />{onlineCount} online</div>
       </div>
 
       {status === 'idle' ? (
         <div className="start-screen">
           <div className="start-card">
-            <h1>Meet Strangers</h1>
-            <p>Random video chat with people around the world</p>
+            <div className="start-icon">⚡</div>
+            <h1>StrangerChat</h1>
+            <p>Connect with random strangers via video chat. No sign-up needed.</p>
             <div className="cam-toggle">
               <button className={`cam-option ${startWithVideo ? 'active' : ''}`} onClick={() => setStartWithVideo(true)}>📹 Video + Voice</button>
               <button className={`cam-option ${!startWithVideo ? 'active' : ''}`} onClick={() => setStartWithVideo(false)}>🎙️ Voice Only</button>
